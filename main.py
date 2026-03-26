@@ -6,7 +6,7 @@ import time
 
 from drawille import Canvas
 
-# Configurable constants (simulation parameters)
+# Configurable constants
 NUM_BOIDS = 50
 MAX_SPEED = 4
 EDGE_MARGIN = 100
@@ -18,7 +18,7 @@ SEPARATION_WEIGHT = 0.08
 TURN = 1
 ENLIGHTENMENT_CHANCE = 5000
 
-TARGET_FRAME_TIME = 0.05
+TARGET_FRAME_TIME = 0.5
 
 
 class Boid:
@@ -128,6 +128,18 @@ def simulation_radii(world_width, world_height):
     return edge_margin, perception_radius, separation_radius
 
 
+def get_arrow(angle_index):
+    # Mapping based on: self.angle = int(round(atan2 / (pi/4))) % 8
+    # 0: East, 1: North-East, 2: North, 3: North-West,
+    # 4: West, 5: South-West, 6: South, 7: South-East
+    arrows = ["→", "↗", "↑", "↖", "←", "↙", "↓", "↘"]
+
+    try:
+        return arrows[angle_index]
+    except IndexError:
+        return "·"
+
+
 def init(world_width, world_height):
     sys.stdout.write("\033[?25l")
     sys.stdout.write("\033[H")
@@ -159,8 +171,16 @@ def render(boids, term_cols, term_rows, world_width, world_height):
     lines = body.splitlines()
     if len(lines) < term_rows:
         lines.extend([""] * (term_rows - len(lines)))
-    lines = [line.ljust(term_cols)[:term_cols] for line in lines[:term_rows]]
-    return "\n".join(lines)
+    grid = [list(line.ljust(term_cols)[:term_cols]) for line in lines[:term_rows]]
+    for boid in boids:
+        # Calculate which character cell the boid falls into
+        col = int((boid.x / world_width) * (term_cols - 1))
+        row = int((boid.y / world_height) * (term_rows - 1))
+
+        if 0 <= col < term_cols and 0 <= row < term_rows:
+            # Overwrite the Braille character with your directional arrow
+            grid[row][col] = get_arrow(boid.angle)
+    return "\n".join("".join(row) for row in grid)
 
 
 def main():
