@@ -1,9 +1,14 @@
 import argparse
+import fcntl
 import math
+import os
 import random
+import select
 import shutil
 import sys
+import termios
 import time
+import tty
 from collections import defaultdict
 
 from drawille import Canvas
@@ -88,13 +93,12 @@ class Predator:
         turn,
     ):
         # Move towards nearest boid
-        if not boids:
-            return
-        nearest_boid = min(
-            boids, key=lambda b: (self.x - b.x) ** 2 + (self.y - b.y) ** 2
-        )
-        self.vx += (nearest_boid.x - self.x) * accel_factor
-        self.vy += (nearest_boid.y - self.y) * accel_factor
+        if boids:
+            nearest_boid = min(
+                boids, key=lambda b: (self.x - b.x) ** 2 + (self.y - b.y) ** 2
+            )
+            self.vx += (nearest_boid.x - self.x) * accel_factor
+            self.vy += (nearest_boid.y - self.y) * accel_factor
 
         # Move away from other predators
         for p in predators:
@@ -571,140 +575,217 @@ def args():
     return parser.parse_args()
 
 
+def validate_config(config):
+    """Validate configuration parameters to prevent runtime errors."""
+    errors = []
+    
+    if config.boid_density <= 0:
+        errors.append("--boid-density must be positive")
+    if config.predator_density <= 0:
+        errors.append("--predator-density must be positive")
+    if config.max_speed <= 0:
+        errors.append("--max-speed must be positive")
+    if config.min_speed < 0:
+        errors.append("--min-speed must be non-negative")
+    if config.min_speed >= config.max_speed:
+        errors.append("--min-speed must be less than --max-speed")
+    if config.perception_factor <= 0:
+        errors.append("--perception-factor must be positive")
+    if config.separation_factor <= 0:
+        errors.append("--separation-factor must be positive")
+    if config.anticluster_radius_factor <= 0:
+        errors.append("--anticluster-radius-factor must be positive")
+    if config.enlightenment_chance <= 0:
+        errors.append("--enlightenment-chance must be positive")
+    if config.frame_time <= 0:
+        errors.append("--frame-time must be positive")
+    
+    if errors:
+        print("Configuration errors:", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
+    # Parse and validate config first, before any terminal modifications
     config = args()
+    validate_config(config)
 
-    term_cols, term_rows, world_width, world_height = terminal_geometry()
+    # Ensure we're running in a terminal
+    if not sys.stdin.isatty():
+        print("Error: This program must be run in a terminal (stdin is not a TTY)", file=sys.stderr)
+        sys.exit(1)
 
-    # Initialize boids, and predators only if enabled
-    num_boids = (world_width * world_height) // config.boid_density
-    boids = [
-        Boid(
-            random.uniform(0, world_width - 1),
-            random.uniform(0, world_height - 1),
-            random.uniform(-config.max_speed, config.max_speed),
-            random.uniform(-config.max_speed, config.max_speed),
-        )
-        for _ in range(num_boids)
-    ]
+    # Save original terminal/file descriptor settings
+    origin_flags = fcntl.fcntl(sys.stdin, fcntl.F_GETFL)
+    origin_stdout_flags = fcntl.fcntl(sys.stdout, fcntl.F_GETFL)
+    origin_term = termios.tcgetattr(sys.stdin)
 
-    if config.no_predators:
-        predators = []
-    else:
-        predators = [
-            Predator(
+    try:
+        # Configure stdin as non-blocking
+        fcntl.fcntl(sys.stdin, fcntl.F_SETFL, origin_flags | os.O_NONBLOCK)
+        
+        # Ensure stdout is blocking
+        fcntl.fcntl(sys.stdout, fcntl.F_SETFL, origin_stdout_flags & ~os.O_NONBLOCK)
+        
+        # Use cbreak mode instead of raw to allow Ctrl+C to work
+        tty.setcbreak(sys.stdin)
+
+        term_cols, term_rows, world_width, world_height = terminal_geometry()
+
+        # Initialize boids, and predators only if enabled
+        num_boids = (world_width * world_height) // config.boid_density
+        boids = [
+            Boid(
                 random.uniform(0, world_width - 1),
                 random.uniform(0, world_height - 1),
                 random.uniform(-config.max_speed, config.max_speed),
                 random.uniform(-config.max_speed, config.max_speed),
             )
-            for _ in range((world_width * world_height) // config.predator_density)
+            for _ in range(num_boids)
         ]
 
-    sys.stdout.write("\033[?25l")
-    sys.stdout.write("\033[H")
-
-    edge_margin, perception_radius, separation_radius, anticluster_radius = (
-        simulation_radii(
-            world_width,
-            world_height,
-            config.perception_factor,
-            config.separation_factor,
-            config.anticluster_radius_factor,
-        )
-    )
-    spatial_hash = SpatialHash(cell_size=perception_radius)
-    predator_hash = SpatialHash(cell_size=perception_radius)
-    last_geometry = (term_cols, term_rows)
-
-    try:
-        while True:
-            term_cols, term_rows, world_width, world_height = terminal_geometry()
-
-            # Updating spatial hash if terminal resizes
-            if (term_cols, term_rows) != last_geometry:
-                last_geometry = (term_cols, term_rows)
-                (
-                    edge_margin,
-                    perception_radius,
-                    separation_radius,
-                    anticluster_radius,
-                ) = simulation_radii(
-                    world_width,
-                    world_height,
-                    config.perception_factor,
-                    config.separation_factor,
-                    config.anticluster_radius_factor,
+        if config.no_predators:
+            predators = []
+        else:
+            predators = [
+                Predator(
+                    random.uniform(0, world_width - 1),
+                    random.uniform(0, world_height - 1),
+                    random.uniform(-config.max_speed, config.max_speed),
+                    random.uniform(-config.max_speed, config.max_speed),
                 )
-                spatial_hash = SpatialHash(cell_size=perception_radius)
-                predator_hash = SpatialHash(cell_size=perception_radius)
+                for _ in range((world_width * world_height) // config.predator_density)
+            ]
 
-            # Boids :D
-            spatial_hash.clear()
-            for boid in boids:
-                spatial_hash.insert(boid)
-            predator_hash.clear()
-            for predator in predators:
-                predator_hash.insert(predator)
+        sys.stdout.write("\033[?25l")
+        sys.stdout.write("\033[H")
 
-            for boid in boids:
-                neighbours = spatial_hash.query(boid.x, boid.y)
-                nearby_predators = predator_hash.query(boid.x, boid.y)
-                boid.update(
-                    neighbours,
-                    world_width,
-                    world_height,
-                    edge_margin,
-                    perception_radius,
-                    separation_radius,
-                    anticluster_radius,
-                    config.min_speed,
-                    config.max_speed,
-                    config.predator_avoidance_weight,
-                    config.anticluster_factor,
-                    config.anticentre_factor,
-                    config.alignment_weight,
-                    config.cohesion_weight,
-                    config.separation_weight,
-                    config.turn,
-                    config.enlightenment_chance,
-                    predators=nearby_predators,
-                )
-            for predator in predators:
-                nearby_boids = spatial_hash.pred_query(predator.x, predator.y)
-                nearby_predators = predator_hash.pred_query(predator.x, predator.y)
-                predator.update(
-                    nearby_boids,
-                    world_width,
-                    world_height,
-                    accel_factor=0.05,
-                    centering_force=0.0005,
-                    min_speed=config.min_speed,
-                    max_speed=config.max_speed * 0.3,
-                    predators=nearby_predators,
-                    predator_separation=config.predator_separation,
-                    turn=config.turn,
-                )
-            sys.stdout.write(
-                "\033[H"
-                + render(
-                    boids,
-                    term_cols,
-                    term_rows,
-                    world_width,
-                    world_height,
-                    boid_count=len(boids),
-                    predators=predators,
-                )
+        edge_margin, perception_radius, separation_radius, anticluster_radius = (
+            simulation_radii(
+                world_width,
+                world_height,
+                config.perception_factor,
+                config.separation_factor,
+                config.anticluster_radius_factor,
             )
-            sys.stdout.flush()
-            time.sleep(config.frame_time)
+        )
+        spatial_hash = SpatialHash(cell_size=perception_radius)
+        predator_hash = SpatialHash(cell_size=perception_radius)
+        last_geometry = (term_cols, term_rows)
 
+        try:
+            while True:
+                term_cols, term_rows, world_width, world_height = terminal_geometry()
+
+                # Updating spatial hash if terminal resizes
+                if (term_cols, term_rows) != last_geometry:
+                    last_geometry = (term_cols, term_rows)
+                    (
+                        edge_margin,
+                        perception_radius,
+                        separation_radius,
+                        anticluster_radius,
+                    ) = simulation_radii(
+                        world_width,
+                        world_height,
+                        config.perception_factor,
+                        config.separation_factor,
+                        config.anticluster_radius_factor,
+                    )
+                    spatial_hash = SpatialHash(cell_size=perception_radius)
+                    predator_hash = SpatialHash(cell_size=perception_radius)
+
+                # Boids :D
+                spatial_hash.clear()
+                for boid in boids:
+                    spatial_hash.insert(boid)
+                predator_hash.clear()
+                for predator in predators:
+                    predator_hash.insert(predator)
+
+                for boid in boids:
+                    neighbours = spatial_hash.query(boid.x, boid.y)
+                    nearby_predators = predator_hash.query(boid.x, boid.y)
+                    boid.update(
+                        neighbours,
+                        world_width,
+                        world_height,
+                        edge_margin,
+                        perception_radius,
+                        separation_radius,
+                        anticluster_radius,
+                        config.min_speed,
+                        config.max_speed,
+                        config.predator_avoidance_weight,
+                        config.anticluster_factor,
+                        config.anticentre_factor,
+                        config.alignment_weight,
+                        config.cohesion_weight,
+                        config.separation_weight,
+                        config.turn,
+                        config.enlightenment_chance,
+                        predators=nearby_predators,
+                    )
+                for predator in predators:
+                    nearby_boids = spatial_hash.pred_query(predator.x, predator.y)
+                    nearby_predators = predator_hash.pred_query(predator.x, predator.y)
+                    predator.update(
+                        nearby_boids,
+                        world_width,
+                        world_height,
+                        accel_factor=0.05,
+                        centering_force=0.0005,
+                        min_speed=config.min_speed,
+                        max_speed=config.max_speed * 0.3,
+                        predators=nearby_predators,
+                        predator_separation=config.predator_separation,
+                        turn=config.turn,
+                    )
+
+                if select.select([sys.stdin], [], [], 0)[0]:
+                    c = sys.stdin.read(1)
+                    if c and c.lower() == "q":
+                        break
+                    if c == "\x03":  # Ctrl+C
+                        break
+
+                sys.stdout.write(
+                    "\033[H"
+                    + render(
+                        boids,
+                        term_cols,
+                        term_rows,
+                        world_width,
+                        world_height,
+                        boid_count=len(boids),
+                        predators=predators,
+                    )
+                )
+                sys.stdout.flush()
+                time.sleep(config.frame_time)
+
+        except KeyboardInterrupt:
+            pass
+        finally:
+            # Restore terminal to original state
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, origin_term)
+            fcntl.fcntl(sys.stdin, fcntl.F_SETFL, origin_flags)
+            fcntl.fcntl(sys.stdout, fcntl.F_SETFL, origin_stdout_flags)
+            sys.stdout.write("\033[H")
+            sys.stdout.write("\033[?25h\n")
     except KeyboardInterrupt:
         pass
     finally:
-        sys.stdout.write("\033[H")
-        sys.stdout.write("\033[?25h\n")
+        # Ensure terminal is always restored, even if setup fails
+        try:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, origin_term)
+            fcntl.fcntl(sys.stdin, fcntl.F_SETFL, origin_flags)
+            fcntl.fcntl(sys.stdout, fcntl.F_SETFL, origin_stdout_flags)
+            sys.stdout.write("\033[?25h\n")
+        except Exception as e:
+            sys.stderr.write(f"\033[?25h\nWarning: failed to restore terminal state: {e}\n")
 
 
 if __name__ == "__main__":
