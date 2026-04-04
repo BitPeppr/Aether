@@ -1,4 +1,4 @@
-# Boids in Your Terminal
+# Aether
 
 Watch a chaotic ecosystem unfold right in your terminal. This is a boids simulation—those classical flocking birds that somehow manage to be both predictable and gloriously messy all at once.
 
