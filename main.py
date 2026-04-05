@@ -45,6 +45,9 @@ PREDATOR_ACCEL_FACTOR = 0.05
 PREDATOR_CENTERING_FORCE = 0.0005
 PREDATOR_MAX_SPEED_FACTOR = 0.3
 
+BLOCK_DENSITY = 5000
+BLOCK_WIDTH = 6
+
 NOISE_STRENGTH = 0.01
 
 TARGET_FRAME_TIME = 0.11
@@ -82,6 +85,7 @@ class SpatialHash:
 
     def clear(self):
         self.cells.clear()
+
 
 # --------------- Boid class -----------------------
 class Boid:
@@ -180,6 +184,14 @@ class Boid:
         self.vx += (self.x - target_x) * anticentre_factor
         self.vy += (self.y - target_y) * anticentre_factor
 
+    def avoid_blocks(self, blocks, edge_force):
+        for b in blocks:
+            # apply repulsive force away from block center on the axis the boid overlaps
+            if b.hitbox_x[0] < self.x < b.hitbox_x[1]:
+                self.vx += (self.x - b.x) * edge_force * 0.175
+            if b.hitbox_y[0] < self.y < b.hitbox_y[1]:
+                self.vy += (self.y - b.y) * edge_force * 0.175
+
     def update(
         self,
         boids,
@@ -202,6 +214,7 @@ class Boid:
         allure_detection_radius_sq,
         predators=None,
         allure=None,
+        blocks=[],
     ):
         self.edges(world_width, world_height, edge_margin, edge_force)
 
@@ -241,6 +254,7 @@ class Boid:
         )
         self.anticentre(world_width, world_height, anticentre_factor)
         self.enlightenment(enlightenment_chance)
+        self.avoid_blocks(blocks, edge_force)
         self.vx += random.uniform(-noise, noise)
         self.vy += random.uniform(-noise, noise)
         self.clamp_speed(min_speed, max_speed)
@@ -250,13 +264,27 @@ class Boid:
         self.x = max(0, min(world_width - 1, self.x))
         self.y = max(0, min(world_height - 1, self.y))
 
+
 # ------------ Allure -----------------------
 class Allure:
     # Class-level constants — identical for every instance, no need to allocate per-object
     FRAME_BASE = (
-        (2, 2), (2, 1), (2, 0), (2, -1), (2, -2),
-        (-2, 2), (-2, 1), (-2, 0), (-2, -1), (-2, -2),
-        (1, 2), (0, 2), (-1, 2), (1, -2), (0, -2), (-1, -2),
+        (2, 2),
+        (2, 1),
+        (2, 0),
+        (2, -1),
+        (2, -2),
+        (-2, 2),
+        (-2, 1),
+        (-2, 0),
+        (-2, -1),
+        (-2, -2),
+        (1, 2),
+        (0, 2),
+        (-1, 2),
+        (1, -2),
+        (0, -2),
+        (-1, -2),
     )
     FRAME_DYNAMIC = (
         ((0, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)),
@@ -271,6 +299,7 @@ class Allure:
     def animate(self):
         dynamic = self.FRAME_DYNAMIC[self.frame_count % len(self.FRAME_DYNAMIC)]
         return self.FRAME_BASE, dynamic
+
 
 # --------------- Predator class -----------------------
 class Predator:
@@ -356,6 +385,17 @@ class Predator:
         self.y = max(0, min(world_height - 1, self.y))
 
 
+# ---------- Blocks / obstacles class ----------------
+class Block:
+    def __init__(self, x, y, width):
+        self.x = x
+        self.y = y
+        self.width = width
+        # store hitboxes as [min, max] for both axes to make checks simpler
+        self.hitbox_x = [self.x - self.width * 1.75, self.x + self.width * 1.75]
+        self.hitbox_y = [self.y - self.width * 1.75, self.y + self.width * 1.75]
+
+
 # ----------- Helper functions ----------------
 def terminal_geometry():
     terminal_size = shutil.get_terminal_size(fallback=(80, 24))
@@ -383,15 +423,16 @@ def simulation_radii(
 # Relative pixel offsets for each of the 8 directions (0–7)
 # 0: East, 1: NE, 2: North, 3: NW, 4: West, 5: SW, 6: South, 7: SE
 DIRECTION_PIXELS = {
-    0: ((0, 0), (-1, 0), (-2, 0), (-1, -1), (-1, 1), (-3, 0)),   # →
-    1: ((0, 0), (-1, 1), (-2, 2), (0, 1), (-1, 0)),               # ↗
-    2: ((0, 0), (0, 1), (0, 2), (-1, 1), (1, 1), (0, 3)),         # ↑
-    3: ((0, 0), (1, 1), (2, 2), (0, 1), (1, 0)),                  # ↖
-    4: ((0, 0), (1, 0), (2, 0), (1, -1), (1, 1), (3, 0)),         # ←
-    5: ((0, 0), (1, -1), (2, -2), (0, -1), (1, 0)),               # ↙
-    6: ((0, 0), (0, -1), (0, -2), (-1, -1), (1, -1), (0, -3)),    # ↓
-    7: ((0, 0), (-1, -1), (-2, -2), (0, -1), (-1, 0)),            # ↘
+    0: ((0, 0), (-1, 0), (-2, 0), (-1, -1), (-1, 1), (-3, 0)),  # →
+    1: ((0, 0), (-1, 1), (-2, 2), (0, 1), (-1, 0)),  # ↗
+    2: ((0, 0), (0, 1), (0, 2), (-1, 1), (1, 1), (0, 3)),  # ↑
+    3: ((0, 0), (1, 1), (2, 2), (0, 1), (1, 0)),  # ↖
+    4: ((0, 0), (1, 0), (2, 0), (1, -1), (1, 1), (3, 0)),  # ←
+    5: ((0, 0), (1, -1), (2, -2), (0, -1), (1, 0)),  # ↙
+    6: ((0, 0), (0, -1), (0, -2), (-1, -1), (1, -1), (0, -3)),  # ↓
+    7: ((0, 0), (-1, -1), (-2, -2), (0, -1), (-1, 0)),  # ↘
 }
+
 
 # --------------- Rendering ----------------
 def render(
@@ -402,6 +443,7 @@ def render(
     world_height,
     predators=None,
     allure=None,
+    blocks=None,
 ):
     canvas = Canvas()
 
@@ -415,8 +457,15 @@ def render(
 
     if predators:
         pred_offsets = (
-            (0, 0), (1, 0), (-1, 0), (0, 1), (0, -1),
-            (0, 2), (0, -2), (2, 0), (-2, 0),
+            (0, 0),
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (0, 2),
+            (0, -2),
+            (2, 0),
+            (-2, 0),
         )
         for pred in predators:
             for dx, dy in pred_offsets:
@@ -434,6 +483,13 @@ def render(
                 if 0 <= px < world_width and 0 <= py < world_height:
                     canvas.set(px, py)
 
+    if blocks:
+        for b in blocks:
+            for dx in range(b.x - b.width, b.x + b.width + 1):
+                for dy in range(b.y - b.width, b.y + b.width + 1):
+                    if 0 <= dx < world_width and 0 <= dy < world_height:
+                        canvas.set(dx, dy)
+
     body = canvas.frame(min_x=0, min_y=0, max_x=world_width, max_y=world_height)
 
     lines = body.splitlines()
@@ -443,66 +499,163 @@ def render(
 
     return "\n".join(lines)
 
+
 # --------------- Parser -----------------
 def parse_args():
     parser = argparse.ArgumentParser(description="Terminal boids simulation!")
 
-    parser.add_argument("--boid-density", type=int, default=BOID_SPAWN_DENSITY,
-        help="Pixel-acres per boid (lower is denser)")
-    parser.add_argument("--predator-density", type=int, default=PREDATOR_SPAWN_DENSITY,
-        help="Pixel-acres per predator (lower is denser)")
-    parser.add_argument("--no-predators", action="store_true",
-        help="Disable predators entirely")
+    parser.add_argument(
+        "--boid-density",
+        type=int,
+        default=BOID_SPAWN_DENSITY,
+        help="Pixel-acres per boid (lower is denser)",
+    )
+    parser.add_argument(
+        "--predator-density",
+        type=int,
+        default=PREDATOR_SPAWN_DENSITY,
+        help="Pixel-acres per predator (lower is denser)",
+    )
+    parser.add_argument(
+        "--no-predators", action="store_true", help="Disable predators entirely"
+    )
 
-    parser.add_argument("--max-speed", type=float, default=MAX_SPEED,
-        help="Maximum speed for boids")
-    parser.add_argument("--min-speed", type=float, default=MIN_SPEED,
-        help="Minimum speed for boids")
+    parser.add_argument(
+        "--max-speed", type=float, default=MAX_SPEED, help="Maximum speed for boids"
+    )
+    parser.add_argument(
+        "--min-speed", type=float, default=MIN_SPEED, help="Minimum speed for boids"
+    )
 
-    parser.add_argument("--alignment-weight", type=float, default=ALIGNMENT_WEIGHT,
-        help="Alignment force weight")
-    parser.add_argument("--cohesion-weight", type=float, default=COHESION_WEIGHT,
-        help="Cohesion force weight")
-    parser.add_argument("--separation-weight", type=float, default=SEPARATION_WEIGHT,
-        help="Separation force weight")
+    parser.add_argument(
+        "--alignment-weight",
+        type=float,
+        default=ALIGNMENT_WEIGHT,
+        help="Alignment force weight",
+    )
+    parser.add_argument(
+        "--cohesion-weight",
+        type=float,
+        default=COHESION_WEIGHT,
+        help="Cohesion force weight",
+    )
+    parser.add_argument(
+        "--separation-weight",
+        type=float,
+        default=SEPARATION_WEIGHT,
+        help="Separation force weight",
+    )
 
-    parser.add_argument("--perception-factor", type=int, default=PERCEPTION_RADIUS_FACTOR,
-        help="Perception radius factor (world_dim / factor)")
-    parser.add_argument("--separation-factor", type=int, default=SEPARATION_RADIUS_FACTOR,
-        help="Separation radius factor (world_dim / factor)")
+    parser.add_argument(
+        "--perception-factor",
+        type=int,
+        default=PERCEPTION_RADIUS_FACTOR,
+        help="Perception radius factor (world_dim / factor)",
+    )
+    parser.add_argument(
+        "--separation-factor",
+        type=int,
+        default=SEPARATION_RADIUS_FACTOR,
+        help="Separation radius factor (world_dim / factor)",
+    )
 
-    parser.add_argument("--anticentre-factor", type=float, default=ANTICENTRE_FACTOR,
-        help="Anticentre force weight")
+    parser.add_argument(
+        "--anticentre-factor",
+        type=float,
+        default=ANTICENTRE_FACTOR,
+        help="Anticentre force weight",
+    )
 
-    parser.add_argument("--enlightenment-chance", type=int, default=ENLIGHTENMENT_CHANCE,
-        help="Enlightenment chance (1 in N per frame)")
+    parser.add_argument(
+        "--enlightenment-chance",
+        type=int,
+        default=ENLIGHTENMENT_CHANCE,
+        help="Enlightenment chance (1 in N per frame)",
+    )
 
-    parser.add_argument("--predator-avoidance-weight", type=float, default=PREDATOR_AVOIDANCE_WEIGHT,
-        help="Predator avoidance force weight")
-    parser.add_argument("--predator-separation", type=float, default=PREDATOR_SEPARATION,
-        help="Predator mutual separation weight")
-    parser.add_argument("--predator-accel-factor", type=float, default=PREDATOR_ACCEL_FACTOR,
-        help="Acceleration toward nearest boid per frame")
-    parser.add_argument("--predator-centering-force", type=float, default=PREDATOR_CENTERING_FORCE,
-        help="Force pulling predators toward center")
-    parser.add_argument("--predator-max-speed-factor", type=float, default=PREDATOR_MAX_SPEED_FACTOR,
-        help="Predator max speed as a multiplier of --max-speed")
+    parser.add_argument(
+        "--predator-avoidance-weight",
+        type=float,
+        default=PREDATOR_AVOIDANCE_WEIGHT,
+        help="Predator avoidance force weight",
+    )
+    parser.add_argument(
+        "--predator-separation",
+        type=float,
+        default=PREDATOR_SEPARATION,
+        help="Predator mutual separation weight",
+    )
+    parser.add_argument(
+        "--predator-accel-factor",
+        type=float,
+        default=PREDATOR_ACCEL_FACTOR,
+        help="Acceleration toward nearest boid per frame",
+    )
+    parser.add_argument(
+        "--predator-centering-force",
+        type=float,
+        default=PREDATOR_CENTERING_FORCE,
+        help="Force pulling predators toward center",
+    )
+    parser.add_argument(
+        "--predator-max-speed-factor",
+        type=float,
+        default=PREDATOR_MAX_SPEED_FACTOR,
+        help="Predator max speed as a multiplier of --max-speed",
+    )
 
-    parser.add_argument("--edge-force", type=float, default=EDGE_FORCE,
-        help="Edge turning force magnitude")
-    parser.add_argument("--noise-strength", type=float, default=NOISE_STRENGTH,
-        help="Random noise strength added to velocity each frame")
-    parser.add_argument("--frame-time", type=float, default=TARGET_FRAME_TIME,
-        help="Target frame time in seconds")
+    parser.add_argument(
+        "--edge-force",
+        type=float,
+        default=EDGE_FORCE,
+        help="Edge turning force magnitude",
+    )
+    parser.add_argument(
+        "--noise-strength",
+        type=float,
+        default=NOISE_STRENGTH,
+        help="Random noise strength added to velocity each frame",
+    )
+    parser.add_argument(
+        "--frame-time",
+        type=float,
+        default=TARGET_FRAME_TIME,
+        help="Target frame time in seconds",
+    )
 
-    parser.add_argument("--allure-chance", type=int, default=ALLURE_CHANCE,
-        help="Allure spawn chance (1 in N per frame)")
-    parser.add_argument("--allure-lifetime", type=int, default=ALLURE_LIFETIME,
-        help="Lifetime of an allure in frames")
-    parser.add_argument("--allure-detection-radius-factor", type=int, default=ALLURE_DETECTION_RADIUS_FACTOR,
-        help="Allure detection radius factor (world_dim / factor)")
-    parser.add_argument("--alluring-weight", type=float, default=ALLURING_WEIGHT,
-        help="Allure attraction force weight")
+    parser.add_argument(
+        "--allure-chance",
+        type=int,
+        default=ALLURE_CHANCE,
+        help="Allure spawn chance (1 in N per frame)",
+    )
+    parser.add_argument(
+        "--allure-lifetime",
+        type=int,
+        default=ALLURE_LIFETIME,
+        help="Lifetime of an allure in frames",
+    )
+    parser.add_argument(
+        "--allure-detection-radius-factor",
+        type=int,
+        default=ALLURE_DETECTION_RADIUS_FACTOR,
+        help="Allure detection radius factor (world_dim / factor)",
+    )
+    parser.add_argument(
+        "--alluring-weight",
+        type=float,
+        default=ALLURING_WEIGHT,
+        help="Allure attraction force weight",
+    )
+    parser.add_argument(
+        "--blocks",
+        type=int,
+        default=BLOCK_DENSITY,
+        help="Density of block / obstacle generation",
+    )
+    parser.add_argument(
+        "--block-width", type=int, default=BLOCK_WIDTH, help="Width of blocks"
+    )
 
     return parser.parse_args()
 
@@ -563,6 +716,10 @@ def validate_config(config):
         errors.append("--allure-detection-radius-factor must be positive")
     if config.alluring_weight < 0:
         errors.append("--alluring-weight must be non-negative")
+    if config.blocks <= 0:
+        errors.append("--blocks should be a positive non-zero integer")
+    if config.block_width <= 0:
+        errors.append("--blocks should have positive non-zero side length")
 
     if errors:
         print("Configuration errors:", file=sys.stderr)
@@ -570,14 +727,17 @@ def validate_config(config):
             print(f"  - {error}", file=sys.stderr)
         sys.exit(1)
 
+
 # -------------- Main loop ----------------
 def main():
     config = parse_args()
     validate_config(config)
 
     if not sys.stdin.isatty():
-        print("Error: This program must be run in a terminal (stdin is not a TTY)",
-              file=sys.stderr)
+        print(
+            "Error: This program must be run in a terminal (stdin is not a TTY)",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     origin_flags = fcntl.fcntl(sys.stdin, fcntl.F_GETFL)
@@ -614,6 +774,17 @@ def main():
                 )
                 for _ in range((world_width * world_height) // config.predator_density)
             ]
+        if config.blocks:
+            blocks = [
+                Block(
+                    random.randint(1, world_width - 1),
+                    random.randint(1, world_height - 1),
+                    config.block_width,
+                )
+                for _ in range((world_width * world_height) // config.blocks)
+            ]
+        else:
+            blocks = []
 
         allure = []
 
@@ -628,6 +799,9 @@ def main():
         )
         spatial_hash = SpatialHash(cell_size=perception_radius)
         predator_hash = SpatialHash(cell_size=perception_radius)
+        blocks_hash = SpatialHash(cell_size=perception_radius)
+        for block in blocks:
+            blocks_hash.insert(block)
         last_geometry = (term_cols, term_rows)
 
         try:
@@ -635,22 +809,32 @@ def main():
                 term_cols, term_rows, world_width, world_height = terminal_geometry()
 
                 if random.randint(0, config.allure_chance) == 0:
-                    allure.append(Allure(
-                        random.uniform(edge_margin * 2, world_width - edge_margin * 2),
-                        random.uniform(edge_margin * 2, world_height - edge_margin * 2),
-                    ))
+                    allure.append(
+                        Allure(
+                            random.uniform(
+                                edge_margin * 2, world_width - edge_margin * 2
+                            ),
+                            random.uniform(
+                                edge_margin * 2, world_height - edge_margin * 2
+                            ),
+                        )
+                    )
 
                 if (term_cols, term_rows) != last_geometry:
                     last_geometry = (term_cols, term_rows)
-                    edge_margin, perception_radius, separation_radius = simulation_radii(
-                        world_width,
-                        world_height,
-                        config.perception_factor,
-                        config.separation_factor,
+                    edge_margin, perception_radius, separation_radius = (
+                        simulation_radii(
+                            world_width,
+                            world_height,
+                            config.perception_factor,
+                            config.separation_factor,
+                        )
                     )
                     spatial_hash = SpatialHash(cell_size=perception_radius)
                     predator_hash = SpatialHash(cell_size=perception_radius)
-
+                    blocks_hash = SpatialHash(cell_size=perception_radius)
+                    for block in blocks:
+                        blocks_hash.insert(block)
                 spatial_hash.clear()
                 for boid in boids:
                     spatial_hash.insert(boid)
@@ -662,11 +846,13 @@ def main():
                 perception_radius_sq = perception_radius * perception_radius
                 separation_radius_sq = separation_radius * separation_radius
                 allure_detection_radius_sq = (
-                    min(world_width, world_height) / config.allure_detection_radius_factor
+                    min(world_width, world_height)
+                    / config.allure_detection_radius_factor
                 ) ** 2
 
                 for boid in boids:
                     neighbours = spatial_hash.query(boid.x, boid.y)
+                    close_blocks = blocks_hash.query(boid.x, boid.y)
                     nearby_predators = predator_hash.query(boid.x, boid.y)
                     boid.update(
                         neighbours,
@@ -689,6 +875,7 @@ def main():
                         allure_detection_radius_sq,
                         predators=nearby_predators,
                         allure=allure,
+                        blocks=close_blocks,
                     )
 
                 for predator in predators:
@@ -720,8 +907,16 @@ def main():
 
                 sys.stdout.write(
                     "\033[H"
-                    + render(boids, term_cols, term_rows, world_width, world_height,
-                             predators=predators, allure=allure)
+                    + render(
+                        boids,
+                        term_cols,
+                        term_rows,
+                        world_width,
+                        world_height,
+                        predators=predators,
+                        allure=allure,
+                        blocks=blocks,
+                    )
                 )
                 sys.stdout.flush()
                 time.sleep(config.frame_time)
@@ -743,7 +938,10 @@ def main():
             fcntl.fcntl(sys.stdout, fcntl.F_SETFL, origin_stdout_flags)
             sys.stdout.write("\033[?25h\n")
         except Exception as e:
-            sys.stderr.write(f"\033[?25h\nWarning: failed to restore terminal state: {e}\n")
+            sys.stderr.write(
+                f"\033[?25h\nWarning: failed to restore terminal state: {e}\n"
+            )
+
 
 # ------------- Entry point ----------------
 if __name__ == "__main__":
