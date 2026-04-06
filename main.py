@@ -10,6 +10,7 @@ import termios
 import time
 import tty
 from collections import defaultdict
+from typing import Union
 
 from drawille import Canvas
 
@@ -55,58 +56,70 @@ TARGET_FRAME_TIME = 0.11
 
 # --------------- Spatialhash class ----------------
 class SpatialHash:
-    def __init__(self, cell_size):
+    cells: dict[tuple[int, int], list[Union["Boid", "Predator", "Block"]]]
+
+    def __init__(self, cell_size: int) -> None:
         self.cell_size = cell_size
         self.cells = defaultdict(list)
 
-    def _hash(self, x, y):
+    def _hash(self, x: float, y: float) -> tuple[int, int]:
         return int(x // self.cell_size), int(y // self.cell_size)
 
-    def insert(self, boid):
-        cell = self._hash(boid.x, boid.y)
-        self.cells[cell].append(boid)
+    def insert(self, item: Union["Boid", "Predator", "Block"]) -> None:
+        cell = self._hash(item.x, item.y)
+        self.cells[cell].append(item)
 
-    def query(self, x, y):
+    def query(self, x: float, y: float) -> list[Union["Boid", "Predator", "Block"]]:
         cell_x, cell_y = self._hash(x, y)
-        nearby = []
+        nearby: list["Boid"] = []
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 nearby.extend(self.cells.get((cell_x + dx, cell_y + dy), []))
         return nearby
 
-    def pred_query(self, x, y):
+    def pred_query(
+        self, x: float, y: float
+    ) -> list[Union["Boid", "Predator", "Block"]]:
         # 5x5 neighbourhood gives predators a larger detection range than boids (3x3)
         cell_x, cell_y = self._hash(x, y)
-        nearby = []
+        nearby: list["Boid"] = []
         for dx in (-2, -1, 0, 1, 2):
             for dy in (-2, -1, 0, 1, 2):
                 nearby.extend(self.cells.get((cell_x + dx, cell_y + dy), []))
         return nearby
 
-    def clear(self):
+    def clear(self) -> None:
         self.cells.clear()
 
 
 # --------------- Boid class -----------------------
 class Boid:
-    def __init__(self, x, y, vx, vy):
+    x: float
+    y: float
+    vx: float
+    vy: float
+    gx: float
+    gy: float
+    angle: int
+
+    def __init__(self, x: float, y: float, vx: float, vy: float) -> None:
         self.x = x
         self.y = y
         self.vx = vx
         self.vy = vy
-        self.gx = 0
-        self.gy = 0
+        self.gx = 0.0
+        self.gy = 0.0
         self.angle = 0
 
     def update_flocking(
         self,
-        boids,
-        alignment_weight,
-        cohesion_weight,
-        separation_weight,
-        sep_sq,
-        per_sq,
-    ):
+        boids: list["Boid"],
+        alignment_weight: float,
+        cohesion_weight: float,
+        separation_weight: float,
+        sep_sq: float,
+        per_sq: float,
+    ) -> None:
         sep_vx, sep_vy = 0.0, 0.0
         align_vx, align_vy = 0.0, 0.0
         coh_x, coh_y = 0.0, 0.0
@@ -142,7 +155,7 @@ class Boid:
             self.vx += ((coh_x / align_count) - self.x) * cohesion_weight
             self.vy += ((coh_y / align_count) - self.y) * cohesion_weight
 
-    def clamp_speed(self, min_speed, max_speed):
+    def clamp_speed(self, min_speed: float, max_speed: float) -> None:
         speed_sq = self.vx * self.vx + self.vy * self.vy
         if speed_sq == 0:
             self.vx = 0.7 * min_speed * random.choice([-1, 1])
@@ -158,7 +171,9 @@ class Boid:
         self.vx *= scale
         self.vy *= scale
 
-    def edges(self, world_width, world_height, edge_margin, edge_force):
+    def edges(
+        self, world_width: int, world_height: int, edge_margin: int, edge_force: float
+    ) -> None:
         if self.x < edge_margin:
             self.vx += edge_force
         elif self.x > world_width - edge_margin:
@@ -168,7 +183,7 @@ class Boid:
         elif self.y > world_height - edge_margin:
             self.vy -= edge_force
 
-    def enlightenment(self, enlightenment_chance):
+    def enlightenment(self, enlightenment_chance: int) -> None:
         if random.randint(0, enlightenment_chance) == 0:
             self.gx += random.uniform(-10, 10)
             self.gy += random.uniform(-10, 10)
@@ -179,43 +194,47 @@ class Boid:
             self.vy += self.gy * 0.05
             self.gy *= 0.85
 
-    def anticentre(self, total_width, total_height, anticentre_factor):
+    def anticentre(
+        self, total_width: int, total_height: int, anticentre_factor: float
+    ) -> None:
         target_x, target_y = total_width / 2, total_height / 2
         self.vx += (self.x - target_x) * anticentre_factor
         self.vy += (self.y - target_y) * anticentre_factor
 
-    def avoid_blocks(self, blocks, edge_force):
+    def avoid_blocks(self, blocks: list["Block"], edge_force: float) -> None:
         for b in blocks:
             # apply repulsive force away from block center on the axis the boid overlaps
-            if b.hitbox_x[0] < self.x < b.hitbox_x[1]:
+            if (
+                b.hitbox_x[0] < self.x < b.hitbox_x[1]
+                and b.hitbox_y[0] < self.y < b.hitbox_y[1]
+            ):
                 self.vx += (self.x - b.x) * edge_force * 0.175
-            if b.hitbox_y[0] < self.y < b.hitbox_y[1]:
                 self.vy += (self.y - b.y) * edge_force * 0.175
 
     def update(
         self,
-        boids,
-        world_width,
-        world_height,
-        edge_margin,
-        perception_radius_sq,
-        separation_radius_sq,
-        min_speed,
-        max_speed,
-        predator_avoidance_weight,
-        anticentre_factor,
-        alignment_weight,
-        cohesion_weight,
-        separation_weight,
-        edge_force,
-        enlightenment_chance,
-        noise,
-        allure_weight,
-        allure_detection_radius_sq,
-        predators=None,
-        allure=None,
-        blocks=[],
-    ):
+        boids: list["Boid"],
+        world_width: int,
+        world_height: int,
+        edge_margin: int,
+        perception_radius_sq: float,
+        separation_radius_sq: float,
+        min_speed: float,
+        max_speed: float,
+        predator_avoidance_weight: float,
+        anticentre_factor: float,
+        alignment_weight: float,
+        cohesion_weight: float,
+        separation_weight: float,
+        edge_force: float,
+        enlightenment_chance: int,
+        noise: float,
+        allure_weight: float,
+        allure_detection_radius_sq: float,
+        blocks: list["Block"],
+        predators: list["Predator"] | None = None,
+        allure: list["Allure"] | None = None,
+    ) -> None:
         self.edges(world_width, world_height, edge_margin, edge_force)
 
         # Flee from nearby predators
@@ -267,8 +286,12 @@ class Boid:
 
 # ------------ Allure -----------------------
 class Allure:
+    x: float
+    y: float
+    frame_count: int
+
     # Class-level constants — identical for every instance, no need to allocate per-object
-    FRAME_BASE = (
+    FRAME_BASE: tuple[tuple[int, int], ...] = (
         (2, 2),
         (2, 1),
         (2, 0),
@@ -286,24 +309,31 @@ class Allure:
         (0, -2),
         (-1, -2),
     )
-    FRAME_DYNAMIC = (
+    FRAME_DYNAMIC: tuple[tuple[tuple[int, int], ...], ...] = (
         ((0, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)),
         ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)),
     )
 
-    def __init__(self, x, y):
+    def __init__(self, x: float, y: float) -> None:
         self.x = x
         self.y = y
         self.frame_count = 0
 
-    def animate(self):
+    def animate(
+        self,
+    ) -> tuple[tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]]:
         dynamic = self.FRAME_DYNAMIC[self.frame_count % len(self.FRAME_DYNAMIC)]
         return self.FRAME_BASE, dynamic
 
 
 # --------------- Predator class -----------------------
 class Predator:
-    def __init__(self, x, y, vx, vy):
+    x: float
+    y: float
+    vx: float
+    vy: float
+
+    def __init__(self, x: float, y: float, vx: float, vy: float) -> None:
         self.x = x
         self.y = y
         self.vx = vx
@@ -311,19 +341,19 @@ class Predator:
 
     def update(
         self,
-        boids,
-        world_width,
-        world_height,
-        edge_margin,
-        accel_factor,
-        centering_force,
-        min_speed,
-        max_speed,
-        predators,
-        predator_separation,
-        edge_force,
-        noise,
-    ):
+        boids: list["Boid"],
+        world_width: int,
+        world_height: int,
+        edge_margin: int,
+        accel_factor: float,
+        centering_force: float,
+        min_speed: float,
+        max_speed: float,
+        predators: list["Predator"],
+        predator_separation: float,
+        edge_force: float,
+        noise: float,
+    ) -> None:
         # Move towards nearest boid
         if boids:
             nearest_boid = min(
@@ -387,7 +417,13 @@ class Predator:
 
 # ---------- Blocks / obstacles class ----------------
 class Block:
-    def __init__(self, x, y, width):
+    x: int
+    y: int
+    width: int
+    hitbox_x: list[float]
+    hitbox_y: list[float]
+
+    def __init__(self, x: int, y: int, width: int) -> None:
         self.x = x
         self.y = y
         self.width = width
@@ -397,7 +433,7 @@ class Block:
 
 
 # ----------- Helper functions ----------------
-def terminal_geometry():
+def terminal_geometry() -> tuple[int, int, int, int]:
     terminal_size = shutil.get_terminal_size(fallback=(80, 24))
     term_cols = max(1, terminal_size.columns)
     term_rows = max(1, terminal_size.lines)
@@ -407,11 +443,11 @@ def terminal_geometry():
 
 
 def simulation_radii(
-    world_width,
-    world_height,
-    perception_factor,
-    separation_factor,
-):
+    world_width: int,
+    world_height: int,
+    perception_factor: int,
+    separation_factor: int,
+) -> tuple[int, int, int]:
     # Use the smaller world dimension so radii scale consistently with terminal size.
     min_dim = min(world_width, world_height)
     edge_margin = max(1, min_dim // 10)
@@ -422,7 +458,7 @@ def simulation_radii(
 
 # Relative pixel offsets for each of the 8 directions (0–7)
 # 0: East, 1: NE, 2: North, 3: NW, 4: West, 5: SW, 6: South, 7: SE
-DIRECTION_PIXELS = {
+DIRECTION_PIXELS: dict[int, tuple[tuple[int, int], ...]] = {
     0: ((0, 0), (-1, 0), (-2, 0), (-1, -1), (-1, 1), (-3, 0)),  # →
     1: ((0, 0), (-1, 1), (-2, 2), (0, 1), (-1, 0)),  # ↗
     2: ((0, 0), (0, 1), (0, 2), (-1, 1), (1, 1), (0, 3)),  # ↑
@@ -436,15 +472,15 @@ DIRECTION_PIXELS = {
 
 # --------------- Rendering ----------------
 def render(
-    boids,
-    term_cols,
-    term_rows,
-    world_width,
-    world_height,
-    predators=None,
-    allure=None,
-    blocks=None,
-):
+    boids: list[Boid],
+    term_cols: int,
+    term_rows: int,
+    world_width: int,
+    world_height: int,
+    predators: list[Predator] | None = None,
+    allure: list[Allure] | None = None,
+    blocks: list[Block] | None = None,
+) -> str:
     canvas = Canvas()
 
     for boid in boids:
@@ -453,7 +489,7 @@ def render(
             px = boid.x + dx
             py = boid.y + dy
             if 0 <= px < world_width and 0 <= py < world_height:
-                canvas.set(px, py)
+                canvas.set(int(px), int(py))
 
     if predators:
         pred_offsets = (
@@ -501,7 +537,10 @@ def render(
 
 
 # --------------- Parser -----------------
-def parse_args():
+from argparse import Namespace
+
+
+def parse_args() -> Namespace:
     parser = argparse.ArgumentParser(description="Terminal boids simulation!")
 
     parser.add_argument(
@@ -660,7 +699,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def validate_config(config):
+def validate_config(config: argparse.Namespace) -> None:
     """Validate configuration parameters to prevent runtime errors."""
     errors = []
 
@@ -729,7 +768,7 @@ def validate_config(config):
 
 
 # -------------- Main loop ----------------
-def main():
+def main() -> None:
     config = parse_args()
     validate_config(config)
 
@@ -873,9 +912,9 @@ def main():
                         config.noise_strength,
                         config.alluring_weight,
                         allure_detection_radius_sq,
+                        blocks=close_blocks,
                         predators=nearby_predators,
                         allure=allure,
-                        blocks=close_blocks,
                     )
 
                 for predator in predators:
