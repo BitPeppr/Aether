@@ -133,8 +133,8 @@ class Boid:
             dy = self.y - other.y
             dist_sq = dx * dx + dy * dy
 
-            if dist_sq == 0:
-                continue  # Skip self (dist_sq == 0 would cause division by zero below)
+            if other is self:
+                continue
 
             if dist_sq < sep_sq:
                 inv = min(1.0 / dist_sq, 100.0)
@@ -160,19 +160,21 @@ class Boid:
 
     def clamp_speed(self, min_speed: float, max_speed: float) -> None:
         speed_sq = self.vx * self.vx + self.vy * self.vy
+        min_speed_sq = min_speed * min_speed
+        max_speed_sq = max_speed * max_speed
         if speed_sq == 0:
             self.vx = 0.7 * min_speed * random.choice([-1, 1])
             self.vy = 0.7 * min_speed * random.choice([-1, 1])
+            # Close enough to 1/sqrt(2) that we can skip the actual division and just scale by 0.7*min_speed :D
             return
-        speed = math.sqrt(speed_sq)
-        if speed > max_speed:
-            scale = max_speed / speed
-        elif speed < min_speed:
-            scale = min_speed / speed
-        else:
-            return
-        self.vx *= scale
-        self.vy *= scale
+        if speed_sq > max_speed_sq:
+            scale = max_speed / speed_sq**0.5
+            self.vx *= scale
+            self.vy *= scale
+        elif speed_sq < min_speed_sq:
+            scale = min_speed / speed_sq**0.5
+            self.vx *= scale
+            self.vy *= scale
 
     def edges(
         self, world_width: int, world_height: int, edge_margin: int, edge_force: float
@@ -214,13 +216,13 @@ class Boid:
                 self.vx += (self.x - b.x) * edge_force * 0.25
                 self.vy += (self.y - b.y) * edge_force * 0.25
 
-    def respawn(self, world_width: int, world_height: int, edge_margin:int) -> None:
+    def respawn(self, world_width: int, world_height: int, edge_margin:int, max_speed: float) -> None:
         self.x = random.uniform(edge_margin, world_width - edge_margin)
         self.y = random.uniform(edge_margin, world_height - edge_margin)
-        self.vx = random.uniform(-MAX_SPEED, MAX_SPEED)
-        self.vy = random.uniform(-MAX_SPEED, MAX_SPEED)
+        self.vx = random.uniform(-max_speed, max_speed)
+        self.vy = random.uniform(-max_speed, max_speed)
 
-    def check_for_staleness(self, blocks: list['Block'], suicide_threshold: float, world_width: int, world_height: int, edge_margin: int) -> bool:
+    def check_for_staleness(self, blocks: list['Block'], suicide_threshold: float, world_width: int, world_height: int, edge_margin: int, max_speed: float) -> bool:
         self.history.append((self.x, self.y))
         self.history.pop(0)
         a_state = self.history[0]
@@ -231,12 +233,12 @@ class Boid:
         c_distance = (c_state[0] - self.x)**2 + (c_state[1] - self.y)**2
         avg=(a_distance+b_distance+c_distance)/3
         if avg<suicide_threshold**2:
-            self.respawn(world_width, world_height, edge_margin)
+            self.respawn(world_width, world_height, edge_margin, max_speed)
             return True
 
         for b in blocks:
             if (b.x - b.width) < self.x < (b.x + b.width) and (b.y - b.width) < self.y < (b.y + b.width):
-                self.respawn(world_width, world_height, edge_margin)
+                self.respawn(world_width, world_height, edge_margin, max_speed)
                 return True
         return False
 
@@ -302,7 +304,7 @@ class Boid:
             separation_radius_sq,
             perception_radius_sq,
         )
-        if self.check_for_staleness(blocks, suicide_value, world_width, world_height, edge_margin):
+        if self.check_for_staleness(blocks, suicide_value, world_width, world_height, edge_margin, max_speed):
             return
         self.anticentre(world_width, world_height, anticentre_factor)
         self.enlightenment(enlightenment_chance)
@@ -427,17 +429,19 @@ class Predator:
         self.vy += random.uniform(-noise, noise)
 
         speed_sq = self.vx * self.vx + self.vy * self.vy
+        min_speed_sq = min_speed * min_speed
+        max_speed_sq = max_speed * max_speed
 
         # Enforce min/max speed — use if/elif so the zero branch never falls through
         # into the min-speed branch with speed_sq still == 0 (ZeroDivisionError)
         if speed_sq == 0:
             self.vx = 0.3 * min_speed * random.choice([-1, 1])
             self.vy = 0.3 * min_speed * random.choice([-1, 1])
-        elif speed_sq < min_speed * min_speed:
+        elif speed_sq < min_speed_sq:
             scale = min_speed / math.sqrt(speed_sq)
             self.vx *= scale
             self.vy *= scale
-        elif speed_sq > max_speed * max_speed:
+        elif speed_sq > max_speed_sq:
             scale = max_speed / math.sqrt(speed_sq)
             self.vx *= scale
             self.vy *= scale
@@ -460,10 +464,21 @@ class Block:
         self.x = x
         self.y = y
         self.width = width
-        # store hitboxes as [min, max] for both axes to make checks simpler
-        self.hitbox_x = [self.x - self.width * 1.75, self.x + self.width * 2.5]
-        self.hitbox_y = [self.y - self.width * 1.75, self.y + self.width * 2.5]
+        self.hitbox_x = [self.x - self.width * 1.75, self.x + self.width * 1.75]
+        self.hitbox_y = [self.y - self.width * 1.75, self.y + self.width * 1.75]
 
+# ---------- Mouse tracking -------------------
+def parse_mouse(stdin) -> tuple[int, int, int] | None:
+    buf=stdin.read(3)
+    if len(buf) < 3:
+        return None
+    btn = buf[0] - 32
+    x = buf[1] - 33
+    y = buf[2] - 33
+
+    button = btn & 0b11
+
+    return button, x, y
 
 # ----------- Helper functions ----------------
 def terminal_geometry() -> tuple[int, int, int, int]:
@@ -541,7 +556,7 @@ def render(
                 px = pred.x + dx
                 py = pred.y + dy
                 if 0 <= px < world_width and 0 <= py < world_height:
-                    canvas.set(px, py)
+                    canvas.set(int(px), int(py))
 
     if allure:
         for a in allure:
@@ -550,14 +565,14 @@ def render(
                 px = a.x + dx
                 py = a.y + dy
                 if 0 <= px < world_width and 0 <= py < world_height:
-                    canvas.set(px, py)
+                    canvas.set(int(px), int(py))
 
     if blocks:
         for b in blocks:
             for dx in range(b.x - b.width, b.x + b.width + 1):
                 for dy in range(b.y - b.width, b.y + b.width + 1):
                     if 0 <= dx < world_width and 0 <= dy < world_height:
-                        canvas.set(dx, dy)
+                        canvas.set(int(dx), int(dy))
 
     body = canvas.frame(min_x=0, min_y=0, max_x=world_width, max_y=world_height)
 
@@ -570,10 +585,7 @@ def render(
 
 
 # --------------- Parser -----------------
-from argparse import Namespace
-
-
-def parse_args() -> Namespace:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Terminal boids simulation!")
 
     parser.add_argument(
@@ -828,6 +840,7 @@ def main() -> None:
         fcntl.fcntl(sys.stdin, fcntl.F_SETFL, origin_flags | os.O_NONBLOCK)
         fcntl.fcntl(sys.stdout, fcntl.F_SETFL, origin_stdout_flags & ~os.O_NONBLOCK)
         tty.setcbreak(sys.stdin)
+        stdin_fd = sys.stdin.buffer.fileno()
 
         term_cols, term_rows, world_width, world_height = terminal_geometry()
 
@@ -870,6 +883,7 @@ def main() -> None:
 
         sys.stdout.write("\033[?25l")
         sys.stdout.write("\033[H")
+        sys.stdout.write("\033[?1000h")
 
         edge_margin, perception_radius, separation_radius = simulation_radii(
             world_width,
@@ -981,9 +995,20 @@ def main() -> None:
                     a.frame_count += 1
                 allure = [a for a in allure if a.frame_count < config.allure_lifetime]
 
-                if select.select([sys.stdin], [], [], 0)[0]:
-                    c = sys.stdin.read(1)
-                    if c and (c.lower() == "q" or c == "\x03"):
+                if select.select([stdin_fd], [], [], 0)[0]:
+                    c = sys.stdin.buffer.read(1)
+                    if c == b'\033':
+                        next_chars = sys.stdin.buffer.read(2)
+                        if next_chars == b'[M':
+                            mouse_event = parse_mouse(sys.stdin.buffer)
+                            if mouse_event:
+                                button, x, y = mouse_event
+                                motion = button & 0b100000
+                                actual_button = button & 0b11
+                                if not motion and actual_button ==0:
+                                    if 0 <= x < term_cols and 0 <= y < term_rows:
+                                        allure.append(Allure(x * 2, y * 4))
+                    elif c and (c == b"q" or c == b'Q' or c == b"\x03"):
                         break
 
                 sys.stdout.write(
@@ -1008,6 +1033,7 @@ def main() -> None:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, origin_term)
             fcntl.fcntl(sys.stdin, fcntl.F_SETFL, origin_flags)
             fcntl.fcntl(sys.stdout, fcntl.F_SETFL, origin_stdout_flags)
+            sys.stdout.write("\033[?1000l")
             sys.stdout.write("\033[2J\033[H\033[?25h\n")
 
     except KeyboardInterrupt:
@@ -1018,6 +1044,7 @@ def main() -> None:
             fcntl.fcntl(sys.stdin, fcntl.F_SETFL, origin_flags)
             fcntl.fcntl(sys.stdout, fcntl.F_SETFL, origin_stdout_flags)
             sys.stdout.write("\033[?25h\n")
+            sys.stdout.write("\033[?1000l")
         except Exception as e:
             sys.stderr.write(
                 f"\033[?25h\nWarning: failed to restore terminal state: {e}\n"
