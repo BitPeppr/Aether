@@ -2,6 +2,8 @@
 
 Watch a chaotic ecosystem unfold right in your terminal. This is a boids simulation—those classical flocking birds that somehow manage to be both predictable and gloriously messy all at once.
 
+![Rosellas in action!](./screenshot.png)
+
 ## What's Happening Here?
 
 You've got a bunch of little critters (boids) bouncing around following three simple rules:

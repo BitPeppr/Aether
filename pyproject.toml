@@ -1,6 +1,6 @@
 [project]
 name = "Rosella"
-version = "0.1.0"
+version = "0.1.1"
 readme = "README.md"
 description = "Terminal boids simulator"
 requires-python = ">=3.10"
