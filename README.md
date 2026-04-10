@@ -30,6 +30,10 @@ Sometimes boids just _get it_ and wander off. Celebrate their brief moment of ph
 
 ```bash
 pip install rosella
+
+brew tap bitpeppr/formulae
+brew install rosella
+
 rosella
 ```
 
